@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tage ohne IT-Ausfall</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --fg: #1f1f1f;
+    --muted: #8a8a8a;
+    --accent: #2e7d32;
+    --rot: #d32f2f;
+    --rot-hover: #b71c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #ececec; --muted: #9b9b9b; --accent: #66bb6a; }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: transparent;
+    color: var(--fg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: clamp(24px, 6vw, 64px);
+    flex-wrap: wrap;
+    padding: 24px;
+  }
+  .card { text-align: center; }
+  .zahl {
+    font-size: clamp(56px, 20vmin, 130px);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+  }
+  .label {
+    margin-top: 10px;
+    font-size: clamp(14px, 3.5vmin, 19px);
+    font-weight: 500;
+  }
+  .seit {
+    margin-top: 6px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  button.reset {
+    appearance: none;
+    border: none;
+    cursor: pointer;
+    background: var(--rot);
+    color: #fff;
+    font: inherit;
+    font-size: 15px;
+    font-weight: 600;
+    padding: 14px 22px;
+    border-radius: 10px;
+    transition: background .15s;
+  }
+  button.reset:hover { background: var(--rot-hover); }
+  button.reset:disabled { opacity: .55; cursor: default; }
+  .status {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--muted);
+    text-align: center;
+    min-height: 15px;
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="zahl" id="zahl">–</div>
+      <div class="label" id="label">Tage ohne IT-Ausfall</div>
+      <div class="seit" id="seit"></div>
+    </div>
+    <div>
+      <button class="reset" id="reset">IT-Ausfall melden<br>Zähler auf 0</button>
+      <div class="status" id="status"></div>
+    </div>
+  </div>
+<script>
+  const OWNER = "shnsn", REPO = "it-ausfall-zaehler", PFAD = "status.json";
+  const API = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${PFAD}`;
+
+  // Schlüssel: aus dem URL-Fragment der Embed-Adresse (#k=...) oder localStorage
+  function schluessel() {
+    const m = location.hash.match(/k=([^&]+)/);
+    if (m) { try { localStorage.setItem("ausfall_key", m[1]); } catch (e) {} return m[1]; }
+    try { return localStorage.getItem("ausfall_key"); } catch (e) { return null; }
+  }
+
+  function heuteBerlin() {
+    return new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Berlin" });
+  }
+
+  function zeige(lastOutage) {
+    const von = new Date(lastOutage + "T00:00:00Z");
+    const heute = new Date(heuteBerlin() + "T00:00:00Z");
+    const tage = Math.max(0, Math.round((heute - von) / 86400000));
+    document.getElementById("zahl").textContent = tage;
+    document.getElementById("label").textContent =
+      (tage === 1 ? "Tag" : "Tage") + " ohne IT-Ausfall";
+    document.getElementById("seit").textContent =
+      "seit " + von.toLocaleDateString("de-DE",
+        { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+  }
+
+  fetch(`./${PFAD}?ts=` + Date.now())
+    .then(r => r.json())
+    .then(d => zeige(d.lastOutage))
+    .catch(() => {
+      document.getElementById("zahl").textContent = "?";
+      document.getElementById("seit").textContent = "status.json nicht erreichbar";
+    });
+
+  // Bestätigung als zweiter Klick (confirm() ist in Notion-Embeds oft blockiert)
+  let bestaetigung = null;
+  document.getElementById("reset").addEventListener("click", async () => {
+    const key = schluessel();
+    const status = document.getElementById("status");
+    const knopf = document.getElementById("reset");
+    if (!key) {
+      status.textContent = "Kein Schlüssel — Embed-Adresse mit #k=… verwenden";
+      return;
+    }
+    if (bestaetigung === null) {
+      knopf.innerHTML = "Sicher?<br>Klick = auf 0 setzen";
+      status.textContent = "Zum Abbrechen 5 Sek. warten";
+      bestaetigung = setTimeout(() => {
+        bestaetigung = null;
+        knopf.innerHTML = "IT-Ausfall melden<br>Zähler auf 0";
+        status.textContent = "";
+      }, 5000);
+      return;
+    }
+    clearTimeout(bestaetigung);
+    bestaetigung = null;
+    knopf.innerHTML = "IT-Ausfall melden<br>Zähler auf 0";
+    knopf.disabled = true;
+    status.textContent = "Setze zurück …";
+    try {
+      const kopf = {
+        "Authorization": "Bearer " + key,
+        "Accept": "application/vnd.github+json",
+      };
+      const akt = await fetch(API, { headers: kopf, cache: "no-store" });
+      if (!akt.ok) throw new Error("HTTP " + akt.status);
+      const { sha } = await akt.json();
+      const datum = heuteBerlin();
+      const inhalt = btoa(JSON.stringify({ lastOutage: datum }, null, 2));
+      const antwort = await fetch(API, {
+        method: "PUT",
+        headers: kopf,
+        body: JSON.stringify({ message: "IT-Ausfall gemeldet — Zähler auf 0", content: inhalt, sha }),
+      });
+      if (!antwort.ok) throw new Error("HTTP " + antwort.status);
+      zeige(datum);
+      status.textContent = "Zurückgesetzt ✓";
+    } catch (e) {
+      status.textContent = /401|403/.test(e.message)
+        ? "Schlüssel ungültig oder abgelaufen"
+        : "Fehler: " + e.message;
+    } finally {
+      knopf.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
